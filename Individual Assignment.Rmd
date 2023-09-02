@@ -1,0 +1,363 @@
+---
+title: "Individual Assignment"
+output:
+  html_document: default
+---
+
+```{r, include=FALSE}
+library(knitr)
+library(readxl)
+library(forecast)
+library(tseries)
+library(vars)
+library(stargazer)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+```
+
+Let's load the dataset 'online_retailer' and delete the weeks 133 to 137 as no revenue is recorded for those lasts weeks:
+
+```{r}
+data <- read_excel("/Users/coralineduval/Downloads/online_retailer.xlsx",sheet='retail_brand', na='NA')
+data=slice(data, 1:132)
+head(data)
+```
+
+
+I will focus on the type of adds (mobile, display, paid search) and the different social media conversations around the brand.
+
+```{r}
+ts.plot(data$revenues, col="blue", main="Revenues")
+ts.plot(data$Mobile_ads, col="darkgreen", main="Mobile ads")
+ts.plot(data$Display_ads, col="red", main="Display ads")
+ts.plot(data$Paid_GGL, col="maroon", main="Paid search ads") 
+```
+
+
+I will now plot the number of conversation for each of the 4 topics over the weeks : 
+
+```{r}
+agg <- data %>%
+   filter(! is.na(earned_ads)) %>%
+   pivot_longer(cols = earned_went_pruchased:earned_love, names_to = "earned", values_to="Value")
+ggplot(agg, aes(x = week_beg, y = Value, group = earned, color = earned)) + geom_line()+ labs(title='Number of conversation on social media by topic', y='Number of conversations',x='Week')
+``` 
+
+The current budget allocation between the three type of ads is:
+
+```{r}
+#Current budget allocation
+
+cost_mobile<-sum(data$Mobile_ads)
+cost_display<-sum(data$Display_ads)
+cost_paid<-sum(data$Paid_GGL)
+cost_total <- cost_mobile+cost_display+cost_paid
+
+costshare_mobile<-cost_mobile/cost_total
+costshare_display<-cost_display/cost_total
+costshare_paid<-cost_paid/cost_total
+
+# Ingredients for the pie-chart 
+slices_actual<-c(costshare_mobile, costshare_display,costshare_paid )
+lbls_actual<-c("Mobile ads", "Display ads", "Paid search ads")
+pct_actual<-round(slices_actual*100)
+lbls_actual<-paste(lbls_actual, pct_actual)          # add data to labels
+lbls_actual<-paste(lbls_actual, "%", sep="")  # add % sign to labels
+
+# Get the pie-chart
+pie(slices_actual, labels=lbls_actual, col=rainbow(length(lbls_actual)), main="Actual Budget Allocation" )
+
+
+```
+
+Then, the log of the variables chosen for this model will be taken to balance out the high volatility observed above.
+
+```{r}
+data$Lrevenues<- log(data$revenues+1)
+data$LMobile_ads<- log(data$Mobile_ads+1)
+data$LDisplay_ads<- log(data$Display_ads+1)
+data$LPaid_GGL<- log(data$Paid_GGL+1)
+data$Learned_General<- log(data$earned_General+1)
+data$Learned_ads<- log(data$earned_ads+1)
+data$Learned_love<- log(data$earned_love+1)
+data$Learned_went_pruchased<- log(data$earned_went_pruchased+1)
+```
+
+## 3. VAR Model Estimation
+
+### 3.1 Pre-estimation Diagnostics
+
+#### 3.1.2 Plot the Data to Inspect Trend
+
+To see if the variables are evolving overtime, the ACF and PACF will be plotted for each variable.   
+
+```{r}
+revenues <- ts(data$revenues, frequency = 52, start = c(1, 1))
+mobile <- ts(data$Mobile_ads, frequency = 52, start = c(1, 1))
+display <- ts(data$Display_ads, frequency = 52, start = c(1, 1))
+paid <- ts(data$Paid_GGL, frequency = 52, start = c(1, 1))
+eg <- ts(data$earned_General, frequency = 52, start = c(1, 1))
+ea <- ts(data$earned_ads, frequency = 52, start = c(1, 1))
+el <- ts(data$earned_love, frequency = 52, start = c(1, 1))
+ewp <- ts(data$earned_went_pruchased, frequency = 52, start = c(1, 1))
+ggtsdisplay(revenues)
+ggtsdisplay(mobile)
+ggtsdisplay(display)
+ggtsdisplay(paid)
+ggtsdisplay(eg)
+ggtsdisplay(ea)
+ggtsdisplay(el)
+ggtsdisplay(ewp)
+
+```
+
+
+#### 3.1.3 Unit Root Testing
+
+The ACF and PACF graphs seen to suggest that most of the variables are stationary. 
+I will run a adf test with the null hypothesis "the variable is not stationary". 
+Beyond plotting, we can run some hypothesis testing to confirm that. There are multiple tests *adf.test*, *pp.test*, *kpss.test*. For the adf.test and pp.test, if the p-value is smaller than significance level then we can reject the null hypothesis that the variable is not stationary; kpss.test is the reverse, the null hypothesis is that it is stationary. 
+
+
+
+```{r}
+Lrevenues <- ts(data$Lrevenues, frequency = 52, start = c(1, 1))
+Lmobile <- ts(data$LMobile_ads, frequency = 52, start = c(1, 1))
+Ldisplay <- ts(data$LDisplay_ads, frequency = 52, start = c(1, 1))
+Lpaid <- ts(data$LPaid_GGL, frequency = 52, start = c(1, 1))
+Leg <- ts(filter(data,! is.na(Learned_General))$Learned_General, frequency = 52, start = c(2, 23))
+Lea <- ts(filter(data,! is.na(Learned_ads))$Learned_ads, frequency = 52, start = c(2, 23))
+Lel <- ts(filter(data,! is.na(Learned_love))$Learned_love, frequency = 52, start = c(2, 23))
+Lewp <- ts(filter(data,! is.na(Learned_went_pruchased))$Learned_went_pruchased, frequency = 52, start = c(2, 23))
+adf.test(Lrevenues)
+adf.test(Lmobile)
+adf.test(Ldisplay)
+adf.test(Lpaid)
+adf.test(Leg)
+adf.test(Lea)
+adf.test(Lel)
+adf.test(Lewp)
+
+
+```
+
+Only Lewp seem to have p>0.05, so we can accept the null hypothesis that the variable is not stationnary and take the first difference to make it stationary. I then run again a adf test to make sure it is now stationnary: 
+
+
+```{r}
+DLewp <-diff(Lewp, differences = 1)
+adf.test(DLewp) #first-differenced series
+```
+
+
+### 3.2 Construct two VAR model
+
+I will construct the VAR model for the ads and for the social media conversations topics.
+
+For the online ads (starting at (1,1) as there is not differentiated variables):
+
+```{r warning=FALSE}
+#Build a dataset for VAR model
+data.ts.d1 <- window(cbind( Lmobile, Ldisplay,Lpaid,Lrevenues), start = c(1, 1))
+
+varp <- VAR(data.ts.d1, ic="AIC", lag.max=1, type="const")
+
+lmp <- varp$varresult
+
+stargazer(lmp$Lrevenues, lmp$Lmobile, lmp$Ldisplay,lmp$Lpaid, column.labels = c('revenues', 'mobile', 'display', 'paid'), type = "text", dep.var.labels.include = FALSE )
+```
+For the social media conversations topics (starting at (2,24) because of the data missing for the first 75 weeks and because of the differentiation of DLewp):
+
+```{r warning=FALSE}
+#Build a dataset for VAR model
+data.ts.d2 <- window(cbind( Leg ,Lea ,Lel,DLewp,Lrevenues), start = c(2, 24))
+
+varp2 <- VAR(data.ts.d2, ic="AIC", lag.max=1, type="const")
+
+lmp2 <- varp2$varresult
+
+stargazer(lmp2$Lrevenues,lmp2$Leg ,lmp2$Lea ,lmp2$Lel,lmp2$DLewp, column.labels = c('revenues', 'general', 'ads', 'love','went purchased'), type = "text", dep.var.labels.include = FALSE )
+```
+
+
+#### Check the residuals
+
+I am checking for both models the residuals' normality and the autocorrelation : 
+
+
+```{r}
+
+revenues.residuals <- data.frame(residuals(varp))$Lrevenues
+revenues.residuals <- ts(revenues.residuals, frequency = 52, start = c(1, 1))
+round(mean(revenues.residuals),4)
+autoplot(revenues.residuals)
+
+revenues2.residuals <- data.frame(residuals(varp2))$Lrevenues
+revenues2.residuals <- ts(revenues2.residuals, frequency = 52, start = c(1, 1))
+round(mean(revenues2.residuals),4)
+autoplot(revenues2.residuals)
+
+```
+
+Both seem quite reasonable as the mean is around 0.
+
+I can now look at the short vs long-term effects of the ads spendings and the topics in social media conversation and the optimal allocation between the three possible online ads. 
+
+
+### 3.3 IRF Analysis
+
+Plotting the IRF plots for the ads : 
+
+
+```{r}
+irfs <- irf(varp, impulse = c('Lmobile', 'Ldisplay','Lpaid'), response = 'Lrevenues', 
+            runs = 100, n.ahead = 7 , ortho = TRUE, ci=0.95)
+
+plot(irfs)
+```
+Plotting the IRF plots for the topics in social media conversations : 
+
+```{r}
+irfs2 <- irf(varp2, impulse = c('Leg' ,'Lea' ,'Lel','DLewp'), response = 'Lrevenues', 
+            runs = 100, n.ahead = 7 , ortho = TRUE, ci=0.95)
+
+plot(irfs2)
+```
+
+
+#### Immediate and Long-Term Effects
+
+In the following part I compute the t-statistics for the IRF coefficient to see if it is significant (>1) or not.
+
+
+```{r}
+#Make a table to summarize IRF coefficients and their confidence intervals
+
+irf.table.ci <- round(data.frame(period = seq(1, 8), 
+                           response.Mobile = irfs$irf$Lmobile, 
+                           Mobile.lower = irfs$Lower$Lmobile, 
+                           Mobile.upper = irfs$Upper$Lmobile, 
+                           response.Display = irfs$irf$Ldisplay, 
+                           display.lower = irfs$Lower$Ldisplay, 
+                           display.upper = irfs$Upper$Ldisplay,
+                           response.Paid = irfs$irf$Lpaid, 
+                           paid.lower = irfs$Lower$Lpaid, 
+                           paid.upper = irfs$Upper$Lpaid),4)
+colnames(irf.table.ci) <- c('Period', 'Lmobile', 'Lmobile Lower', 'Lmobile Upper','Display', 
+                            'Ldisplay Lower', 'Ldisplay Upper','Paid', 
+                            'Lpaid Lower', 'Lpaid Upper')
+
+knitr::kable(irf.table.ci)
+```
+
+I then apply the t>1 criteria and calculate the long term elasticities for each type of ad spending:
+
+```{r}
+#Mobile
+result_irf_mobile<-matrix(nrow = 8, ncol = 1)
+
+for (i in 1:8) {
+  se <- (irfs$Upper$Lmobile[i]-irfs$Lower$Lmobile[i])/(2*1.96)
+  t_irf_mobile<- irfs$irf$Lmobile[i]/se
+   
+   if (t_irf_mobile>1) {
+    result_irf_mobile[i] <- irfs$irf$Lmobile[i]
+   } else {
+      result_irf_mobile[i] <-0
+      }
+}
+result_irf_mobile
+lr_mobile <- sum(result_irf_mobile)
+lr_mobile
+```
+
+An increase in mobile ads spendings will have the largest positive impact on revenues in the first and second period.
+An 1% increase in mobile advertising spending will increase the retailer revenues by 0.23% in the long run.
+
+```{r}
+#Display spending
+
+result_irf_display<-matrix(nrow = 8, ncol = 1)
+
+for (i in 1:8) {
+  se <- (irfs$Upper$Ldisplay[i]-irfs$Lower$Ldisplay[i])/(2*1.96)
+  t_irf_display<- irfs$irf$Ldisplay[i]/se
+   
+   if (t_irf_display>1) {
+    result_irf_display[i] <- irfs$irf$Ldisplay[i]
+   } else {
+      result_irf_display[i] <-0
+      }
+}
+result_irf_display
+lr_display <- sum(result_irf_display)
+lr_display
+```
+
+An increase in display ads spendings will have a positive impact (while small) on revenues in the first period.
+An 1% increase in display advertising spending will increase the retailer revenues by 0.02% in the long run.
+
+```{r}
+#Paid
+
+result_irf_paid<-matrix(nrow = 8, ncol = 1)
+
+for (i in 1:8) {
+  se <- (irfs$Upper$Lpaid[i]-irfs$Lower$Lpaid[i])/(2*1.96)
+  t_irf_paid<- irfs$irf$Lpaid[i]/se
+   
+   if (t_irf_paid>1) {
+    result_irf_paid[i] <- irfs$irf$Lpaid[i]
+   } else {
+      result_irf_paid[i] <-0
+      }
+}
+result_irf_paid
+lr_paid <- sum(result_irf_paid)
+lr_paid
+```
+
+An increase in paid seraches ads spendings will have a large positive impact on revenues in the first and second period.
+An 1% increase in paid searches advertising spending will increase the retailer revenues by 0.20% in the long run.
+
+### 3.4 Optimal allocation of spending
+
+I will now compute the optimal allocation between the three types of ads.
+
+```{r}
+
+#Get the coefficients from IRF results
+beta_mobile<-lr_mobile
+beta_display<-lr_display
+beta_paid<-lr_paid
+
+#The sum of all elasticities 
+beta_all<-beta_mobile+beta_display+beta_paid
+
+#Optimal resource allocation
+optim_mobile<-beta_mobile/beta_all
+optim_display<-beta_display/beta_all
+optim_paid<-beta_paid/beta_all
+```
+
+Here is the resulting budget allocation :
+```{r}
+## Pie-chart ingredients 
+optimal_spend<-c(optim_mobile,optim_display, optim_paid)
+optimal_spend=round(optimal_spend, digits=5)
+optimal_spend
+
+slices_optim<-c(optim_mobile,optim_display, optim_paid)
+lbls_optim<-c("Mobile ads", "Display ads", "Paid search ads")
+pct_optim<-round(slices_optim*100)
+lbls_optim<-paste(lbls_optim, pct_optim)   # paste variable names to data labels 
+lbls_optim<-paste(lbls_optim, "%", sep="") # add % sign to labels
+
+# Get the pie-chart
+pie(slices_optim, labels=lbls_optim, col=rainbow(length(lbls_optim)), main="Optimal Budget Allocation" )
+
+```
+
+
+
